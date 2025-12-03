@@ -36,6 +36,7 @@ class CameraInfo(NamedTuple):
     width: int
     height: int
     is_test: bool
+    time_idx: int # WDD [2024-07-30] 原因: 为动态场景添加时间索引。
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -68,7 +69,7 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, depths_folder, test_cam_names_list):
+def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, depths_folder, test_cam_names_list, time_idx=0): # WDD [2024-07-30] 原因: 增加time_idx参数以支持动态场景。
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -111,7 +112,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
                               image_path=image_path, image_name=image_name, depth_path=depth_path,
-                              width=width, height=height, is_test=image_name in test_cam_names_list)
+                              width=width, height=height, is_test=image_name in test_cam_names_list, time_idx=time_idx) # WDD [2024-07-30] 原因: 将时间索引保存到CameraInfo中。
         cam_infos.append(cam_info)
 
     sys.stdout.write('\n')
@@ -313,10 +314,13 @@ def read4DGSSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     train_cam_infos = []
     test_cam_infos = []
 
-    frame_dirs = sorted([d for d in os.listdir(path) if d.startswith('frame') and os.path.isdir(os.path.join(path, d))])
+    frame_dirs = sorted([d for d in os.listdir(path) if d.startswith('frame') and os.path.isdir(os.path.join(path, d))]) # WDD [2024-07-30] 原因: 获取所有帧目录并排序。
+    #
 
-    for frame_dir in frame_dirs:
+    
+    for time_idx, frame_dir in enumerate(frame_dirs): # WDD [2024-07-30] 原因: 遍历帧目录以获取每个时间步的相机信息，并记录时间索引。
         frame_path = os.path.join(path, frame_dir)
+
         try:
             cameras_extrinsic_file = os.path.join(frame_path, "sparse/0", "images.bin")
             cameras_intrinsic_file = os.path.join(frame_path, "sparse/0", "cameras.bin")
@@ -331,8 +335,8 @@ def read4DGSSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
         reading_dir = "images" if images is None else images
         cam_infos_unsorted = readColmapCameras(
             cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, depths_params=None,
-            images_folder=os.path.join(frame_path, reading_dir), 
-            depths_folder="", test_cam_names_list=[])
+            images_folder=os.path.join(frame_path, reading_dir),
+            depths_folder="", test_cam_names_list=[], time_idx=time_idx) # WDD [2024-07-30] 原因: 将当前的时间索引传递给相机读取函数。
         
         train_cam_infos.extend(cam_infos_unsorted)
 

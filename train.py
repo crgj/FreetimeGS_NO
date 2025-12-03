@@ -11,6 +11,7 @@
 
 import os
 import torch
+import time #WDD [2024-07-31] [导入time模块以实现GUI中时间索引的定时更新]
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
@@ -68,6 +69,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_loss_for_log = 0.0
     ema_Ll1depth_for_log = 0.0
 
+    # WDD [2024-07-31] [为GUI动态播放初始化时间和时间索引]
+    last_time_update = time.time()
+    current_time_idx = 0
+    frame_count = scene.gaussians.get_opacity.shape[1]
+
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):
@@ -78,6 +84,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 net_image_bytes = None
                 custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
                 if custom_cam != None:
+                    # WDD [2024-07-31] [实现GUI中每2秒自动切换时间索引，以循环播放]
+                    if time.time() - last_time_update > 2:
+                        last_time_update = time.time()
+                        current_time_idx = (current_time_idx + 1) % frame_count
+                    custom_cam.time_idx = current_time_idx
+
                     net_image = render(custom_cam, gaussians, pipe, background, scaling_modifier=scaling_modifer, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)["render"]
                     net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
                 network_gui.send(net_image_bytes, dataset.source_path)
@@ -149,7 +161,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
 
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
+                # WDD [2024-08-01] [在进度条上显示当前的总高斯点数]
+                postfix_dict = {"Loss": f"{ema_loss_for_log:.{7}f}",   "Points": f"{gaussians.get_xyz.shape[0]}"}
+                progress_bar.set_postfix(postfix_dict)
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()

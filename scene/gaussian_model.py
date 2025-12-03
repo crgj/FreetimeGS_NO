@@ -56,7 +56,10 @@ class GaussianModel:
         self._features_rest = torch.empty(0)
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
-        self._opacity = torch.empty(0)
+        
+        self._opacity = torch.empty(0) 
+
+
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
@@ -125,6 +128,9 @@ class GaussianModel:
     def get_features_rest(self):
         return self._features_rest
     
+
+    def get_opacity_for_render(self,time_index=0):
+        return self.opacity_activation(self._opacity[:, time_index])
     @property
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
@@ -146,7 +152,7 @@ class GaussianModel:
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
-    def create_from_pcd(self, pcd : BasicPointCloud, cam_infos : int, spatial_lr_scale : float):
+    def create_from_pcd(self, pcd : BasicPointCloud, cam_infos : int, spatial_lr_scale : float,Frame_count=2):
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
@@ -161,7 +167,8 @@ class GaussianModel:
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
-        opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+        
+        opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], Frame_count), dtype=torch.float, device="cuda"))
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
@@ -236,22 +243,32 @@ class GaussianModel:
             l.append('rot_{}'.format(i))
         return l
 
-    def save_ply(self, path):
+    def save_ply(self, path, time_idx=None):
+        # WDD [2024-08-01] [修复4DGS保存ply的错误]
+        # 修改save_ply以接受time_idx，并根据它保存单帧的不透明度
         mkdir_p(os.path.dirname(path))
 
         xyz = self._xyz.detach().cpu().numpy()
         normals = np.zeros_like(xyz)
         f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-        opacities = self._opacity.detach().cpu().numpy()
+        
+        opacities_full = self._opacity.detach().cpu().numpy()
+        if time_idx is not None and opacities_full.ndim == 2:
+            # 如果提供了time_idx且opacity是2D的，则选择对应帧
+            opacities = opacities_full[:, time_idx:time_idx+1]
+        else:
+            # 否则，保持原样（兼容1D或整个2D数组，尽管后者会报错）
+            opacities = opacities_full
+
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
 
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
-        elements[:] = list(map(tuple, attributes))
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)        
+        elements[:] = list(map(tuple, attributes)) # 这一行就是报错的地方
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
 
@@ -333,8 +350,17 @@ class GaussianModel:
         for group in self.optimizer.param_groups:
             stored_state = self.optimizer.state.get(group['params'][0], None)
             if stored_state is not None:
-                stored_state["exp_avg"] = stored_state["exp_avg"][mask]
-                stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
+                #stored_state["exp_avg"] = stored_state["exp_avg"][mask]
+                #stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
+
+                # 特别处理 opacity 张量，因为它具有不同的形状 [N, Frame_count]
+                if group["name"] == "opacity":
+                    stored_state["exp_avg"] = stored_state["exp_avg"][mask]
+                    stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
+                else:
+                    # 标准处理其他张量
+                    stored_state["exp_avg"] = stored_state["exp_avg"][mask]
+                    stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
 
                 del self.optimizer.state[group['params'][0]]
                 group["params"][0] = nn.Parameter((group["params"][0][mask].requires_grad_(True)))
@@ -457,7 +483,8 @@ class GaussianModel:
         self.densify_and_clone(grads, max_grad, extent)
         self.densify_and_split(grads, max_grad, extent)
 
-        prune_mask = (self.get_opacity < min_opacity).squeeze()
+        #WDD [2024-07-31] [修复剪枝时的维度不匹配问题]
+        prune_mask = (self.get_opacity < min_opacity).all(dim=-1)
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
