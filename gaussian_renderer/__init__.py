@@ -53,6 +53,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     means3D = pc.get_xyz
     means2D = screenspace_points 
+    #WDD [2024-07-30] [修改不再使用单一时间索引的opacity，而是使用完整的opacity张量]
     opacity = pc.get_opacity [:, viewpoint_camera.time_idx:viewpoint_camera.time_idx+1]  
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from

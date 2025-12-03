@@ -127,10 +127,7 @@ class GaussianModel:
     @property
     def get_features_rest(self):
         return self._features_rest
-    
-
-    def get_opacity_for_render(self,time_index=0):
-        return self.opacity_activation(self._opacity[:, time_index])
+     
     @property
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
