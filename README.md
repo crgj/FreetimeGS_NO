@@ -1,5 +1,10 @@
 # FreeTimeGS（非官方实现）
 
+## 分支说明
+当前分支，共享主要的高斯参数，而为每个时刻（time_idx）创建一个独立的opacity数值，用来学习。
+
+
+
 本仓库是 CVPR 2024《FreeTimeGS: Free Gaussian Primitives at Anytime Anywhere for Dynamic Scene Reconstruction》的非官方复现版本，目标是高质量、实时的动态场景渲染。
 
 ## 方法概览
