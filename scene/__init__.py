@@ -74,28 +74,14 @@ class Scene:
             with open(os.path.join(self.model_path, "cameras.json"), 'w') as file:
                 json.dump(json_cams, file)
 
-        # if shuffle:
-        #     random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling
-        #     random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
+        if shuffle:
+            random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling
+            random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
 
         self.train_cameras_info = scene_info.train_cameras
         self.test_cameras_info = scene_info.test_cameras
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
-
-        # 全部加载
-        # for resolution_scale in resolution_scales:
-        #     print("Loading Training Cameras")
-        #     self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, False)
-        #     print("Loading Test Cameras")
-        #     self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, True)
-
-        #dataset加载
-        # for resolution_scale in resolution_scales:
-        #     print("Loading Training Cameras")
-        #     self.train_cameras[resolution_scale] =ColmapDataset(scene_info.train_cameras,args.resolution,resolution_scale)
-        #     print("Loading Test Cameras")
-        #     self.test_cameras[resolution_scale] = ColmapDataset(scene_info.test_cameras,args.resolution,resolution_scale)
 
 
         if self.loaded_iter:

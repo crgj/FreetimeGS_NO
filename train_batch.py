@@ -107,26 +107,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
         for iteration in range(first_iter, opt.iterations + 1):
 
-            # if network_gui.conn == None:
-            #     network_gui.try_connect()
-            # while network_gui.conn != None:
-            #     try:
-            #         net_image_bytes = None
-            #         custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
-            #         if custom_cam != None:
-            #             # WDD [2024-07-31] [实现GUI中每0.2秒自动切换时间索引，以循环播放]
-            #             if time.time() - last_time_update > 0.2:
-            #                 last_time_update = time.time()
-            #                 current_time_idx = (current_time_idx + 1) % frame_count
-            #             custom_cam.time_idx = current_time_idx
+            if network_gui.conn == None:
+                network_gui.try_connect()
+            while network_gui.conn != None:
+                try:
+                    net_image_bytes = None
+                    custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
+                    if custom_cam != None:
+                        # WDD [2024-07-31] [实现GUI中每0.2秒自动切换时间索引，以循环播放]
+                        if time.time() - last_time_update > 0.2:
+                            last_time_update = time.time()
+                            current_time_idx = (current_time_idx + 1) % frame_count
+                        custom_cam.time_idx = current_time_idx
 
-            #             net_image = render(custom_cam, gaussians, pipe, background, scaling_modifier=scaling_modifer, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)["render"]
-            #             net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
-            #         network_gui.send(net_image_bytes, dataset.source_path)
-            #         if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
-            #             break
-            #     except Exception as e:
-            #         network_gui.conn = None
+                        net_image = render(custom_cam, gaussians, pipe, background, scaling_modifier=scaling_modifer, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)["render"]
+                        net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
+                    network_gui.send(net_image_bytes, dataset.source_path)
+                    if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
+                        break
+                except Exception as e:
+                    network_gui.conn = None
 
             global_iteration+=1
             if not viewpoint_stack:
