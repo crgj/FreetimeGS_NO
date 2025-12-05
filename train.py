@@ -79,7 +79,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     # WDD [2024-07-31] [为GUI动态播放初始化时间和时间索引]
     last_time_update = time.time()
     current_time_idx = 0
-    frame_count = scene.gaussians.get_opacity.shape[1]
+    # 获取总帧数，通过查找训练数据中最大的时间索引+1
+    frame_count = max(camera.time_idx for camera in scene.getTrainCameras()) + 1
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -296,7 +297,7 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000,50_000,80_000,100_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument('--disable_viewer', action='store_true', default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
