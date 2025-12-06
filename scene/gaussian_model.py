@@ -11,7 +11,7 @@
 
 import torch
 import numpy as np
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation, quaternion_multiply, quaternion_from_axis_angle
 from torch import nn
 import os
 import json
@@ -63,6 +63,11 @@ class GaussianModel:
         self._lifetime_w = torch.empty(0) # 时间宽度
         self._lifetime_k = torch.empty(0) # 时间边缘锐度
 
+        # WDD [2024-08-08] [为运动模型增加线速度和角速度参数]
+        self._velocity = torch.empty(0) # (N, 3)
+        self._angular_velocity = torch.empty(0) # (N, 3) axis-angle
+        self.motion_model_enabled = False # WDD [2024-08-08] [用于切换静态/动态模型的开关]
+
 
         self._exposure = torch.empty(0)
         self.exposure_mapping = {}
@@ -88,6 +93,9 @@ class GaussianModel:
             self._lifetime_mu,
             self._lifetime_w,
             self._lifetime_k,
+            # WDD [2024-08-08] [在模型捕获和恢复中加入运动参数]
+            self._velocity,
+            self._angular_velocity,
             self.xyz_gradient_accum,
             self.denom,
             self.optimizer.state_dict(),
@@ -106,6 +114,9 @@ class GaussianModel:
         self._lifetime_mu,
         self._lifetime_w,
         self._lifetime_k,
+        # WDD [2024-08-08] [在模型捕获和恢复中加入运动参数]
+        self._velocity,
+        self._angular_velocity,
         xyz_gradient_accum, 
         denom,
         opt_dict, 
@@ -124,9 +135,27 @@ class GaussianModel:
         return self.rotation_activation(self._rotation)
     
     @property
-    def get_xyz(self):
+    def get_xyz(self): # WDD [2024-08-08] [修改：现在这是一个属性，而不是方法]
         return self._xyz
     
+    def get_xyz_at_time(self, t):
+        # WDD [2024-08-08] [根据时间t计算高斯位置]
+        if self.motion_model_enabled:
+            # XYZ(t) = XYZ_0 + V * t
+            return self._xyz + self._velocity * t
+        else:
+            return self._xyz
+
+    def get_rotation_at_time(self, t):
+        # WDD [2024-08-08] [根据时间t计算高斯旋转]
+        if self.motion_model_enabled:
+            # Rot(t) = Rot_0 * delta_Rot(t)
+            # delta_Rot(t) 是由角速度 ω*t 产生的旋转
+            delta_q = quaternion_from_axis_angle(self._angular_velocity * t)
+            return quaternion_multiply(self._rotation, delta_q)
+        else:
+            return self._rotation
+
     @property
     def get_features(self):
         features_dc = self._features_dc
@@ -237,6 +266,10 @@ class GaussianModel:
         # WDD [2024-08-07] [k: 边缘锐度（初始化为中等值）]
         lifetime_k = torch.full((fused_point_cloud.shape[0], 1), 5.0, dtype=torch.float, device="cuda")
 
+        # WDD [2024-08-08] [初始化运动参数为0]
+        velocity = torch.zeros((fused_point_cloud.shape[0], 3), dtype=torch.float, device="cuda")
+        angular_velocity = torch.zeros((fused_point_cloud.shape[0], 3), dtype=torch.float, device="cuda")
+
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
@@ -248,12 +281,22 @@ class GaussianModel:
         self._lifetime_mu = nn.Parameter(lifetime_mu.requires_grad_(True))
         self._lifetime_w = nn.Parameter(lifetime_w.requires_grad_(True))
         self._lifetime_k = nn.Parameter(lifetime_k.requires_grad_(True))
+
+        # WDD [2024-08-08] [将运动参数设置为可训练的nn.Parameter]
+        self._velocity = nn.Parameter(velocity.requires_grad_(True))
+        self._angular_velocity = nn.Parameter(angular_velocity.requires_grad_(True))
         
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         self.exposure_mapping = {cam_info.image_name: idx for idx, cam_info in enumerate(cam_infos)}
         self.pretrained_exposures = None
         exposure = torch.eye(3, 4, device="cuda")[None].repeat(len(cam_infos), 1, 1)
         self._exposure = nn.Parameter(exposure.requires_grad_(True))
+
+    def enable_motion_model(self, training_args):
+        # WDD [2024-08-08] [在第二阶段训练开始时调用，以激活运动模型并设置其学习率]
+        self.motion_model_enabled = True
+        self.optimizer.add_param_group({'params': [self._velocity], 'lr': training_args.velocity_lr, "name": "velocity"})
+        self.optimizer.add_param_group({'params': [self._angular_velocity], 'lr': training_args.angular_velocity_lr, "name": "angular_velocity"})
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
@@ -324,6 +367,10 @@ class GaussianModel:
             l.append('rot_{}'.format(i))
         # WDD [2024-08-07] [在PLY文件中增加lifetime参数的属性]
         l.extend(['lifetime_mu', 'lifetime_w', 'lifetime_k'])
+        # WDD [2024-08-08] [在PLY文件中增加运动参数的属性]
+        # WDD [2024-08-09] [原因: 仅在运动模型启用时才保存运动参数，以兼容静态训练]
+        if self.motion_model_enabled:
+            l.extend(['vx', 'vy', 'vz', 'avx', 'avy', 'avz'])
         return l
 
     def save_ply(self, path, time_idx=None):
@@ -363,7 +410,13 @@ class GaussianModel:
         # WDD [2024-08-07] [确保所有要拼接的数组都具有正确的二维形状 (N, M)，顺序与 construct_list_of_attributes 严格对应]
         # WDD [2024-08-07] [xyz(3), normals(3), f_dc(3), f_rest(45), opacities(1), scale(3), rotation(4), lifetime(3)]
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation, lifetime_mu, lifetime_w, lifetime_k), axis=1)
+        attributes = [xyz, normals, f_dc, f_rest, opacities, scale, rotation, lifetime_mu, lifetime_w, lifetime_k]
+
+        # WDD [2024-08-09] [原因: 仅在运动模型启用时才拼接运动参数，以兼容静态训练]
+        if self.motion_model_enabled:
+            attributes.extend([self._velocity.detach().cpu().numpy(), self._angular_velocity.detach().cpu().numpy()])
+
+        attributes = np.concatenate(attributes, axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
@@ -426,6 +479,20 @@ class GaussianModel:
             lifetime_w = np.full((num_points, 1), 2.0)   # WDD [2024-08-07] [默认半宽度]
             lifetime_k = np.full((num_points, 1), 5.0)   # WDD [2024-08-07] [默认锐度]
 
+        # WDD [2024-08-08] [如果PLY文件中存在，则加载运动参数]
+        try:
+            velocity = np.stack((np.asarray(plydata.elements[0]["vx"]),
+                                 np.asarray(plydata.elements[0]["vy"]),
+                                 np.asarray(plydata.elements[0]["vz"])), axis=1)
+            angular_velocity = np.stack((np.asarray(plydata.elements[0]["avx"]),
+                                         np.asarray(plydata.elements[0]["avy"]),
+                                         np.asarray(plydata.elements[0]["avz"])), axis=1)
+        except:
+            # WDD [2024-08-08] [如果文件中不存在参数，则进行默认初始化为0]
+            num_points = xyz.shape[0]
+            velocity = np.zeros((num_points, 3))
+            angular_velocity = np.zeros((num_points, 3))
+
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").unsqueeze(1).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").reshape(features_extra.shape[0], -1, 3).contiguous().requires_grad_(True))
@@ -436,6 +503,9 @@ class GaussianModel:
         self._lifetime_k = nn.Parameter(torch.tensor(lifetime_k, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rotations, dtype=torch.float, device="cuda").requires_grad_(True))
+        # WDD [2024-08-08] [加载运动参数]
+        self._velocity = nn.Parameter(torch.tensor(velocity, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._angular_velocity = nn.Parameter(torch.tensor(angular_velocity, dtype=torch.float, device="cuda").requires_grad_(True))
         self.active_sh_degree = self.max_sh_degree
 
     def replace_tensor_to_optimizer(self, tensor, name):
@@ -488,6 +558,10 @@ class GaussianModel:
         self._lifetime_mu = optimizable_tensors["lifetime_mu"]
         self._lifetime_w = optimizable_tensors["lifetime_w"]
         self._lifetime_k = optimizable_tensors["lifetime_k"]
+        # WDD [2024-08-09] [原因: 仅在运动模型启用时才修剪运动参数，以兼容静态训练]
+        if self.motion_model_enabled:
+            if "velocity" in optimizable_tensors: self._velocity = optimizable_tensors["velocity"]
+            if "angular_velocity" in optimizable_tensors: self._angular_velocity = optimizable_tensors["angular_velocity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
@@ -528,6 +602,11 @@ class GaussianModel:
         "scaling" : new_scaling,
         "rotation" : new_rotation}
 
+        # WDD [2024-08-09] [原因: 仅在运动模型启用时才处理运动参数，以兼容静态训练]
+        if self.motion_model_enabled:
+            d["velocity"] = torch.zeros_like(new_xyz)
+            d["angular_velocity"] = torch.zeros_like(new_xyz)
+
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
         self._features_dc = optimizable_tensors["f_dc"]
@@ -537,6 +616,10 @@ class GaussianModel:
         self._lifetime_mu = optimizable_tensors["lifetime_mu"]
         self._lifetime_w = optimizable_tensors["lifetime_w"]
         self._lifetime_k = optimizable_tensors["lifetime_k"]
+        # WDD [2024-08-09] [原因: 仅在运动模型启用时才更新运动参数，以兼容静态训练]
+        if self.motion_model_enabled:
+            self._velocity = optimizable_tensors["velocity"]
+            self._angular_velocity = optimizable_tensors["angular_velocity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 

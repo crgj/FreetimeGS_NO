@@ -109,6 +109,48 @@ def build_scaling_rotation(s, r):
     L = R @ L
     return L
 
+def quaternion_from_axis_angle(axis_angle: torch.Tensor) -> torch.Tensor:
+    """
+    # WDD [2024-08-09] [原因: 为运动模型添加辅助函数，将轴-角表示转换为四元数]
+    Convert an axis-angle representation to a quaternion.
+    
+    Args:
+        axis_angle (torch.Tensor): (N, 3) tensor of axis-angle rotations.
+                                   The direction is the axis of rotation,
+                                   and the magnitude is the angle in radians.
+    
+    Returns:
+        torch.Tensor: (N, 4) tensor of quaternions (w, x, y, z).
+    """
+    angle = torch.linalg.norm(axis_angle, dim=-1, keepdim=True)
+    axis = torch.nn.functional.normalize(axis_angle, dim=-1)
+    
+    angle = angle * 0.5
+    q_w = torch.cos(angle)
+    q_xyz = axis * torch.sin(angle)
+    
+    return torch.cat([q_w, q_xyz], dim=-1)
+
+def quaternion_multiply(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+    """
+    # WDD [2024-08-09] [原因: 为运动模型添加辅助函数，实现四元数乘法]
+    Multiply two quaternions.
+    
+    Args:
+        q1 (torch.Tensor): (N, 4) tensor of quaternions (w, x, y, z).
+        q2 (torch.Tensor): (N, 4) tensor of quaternions (w, x, y, z).
+        
+    Returns:
+        torch.Tensor: (N, 4) tensor representing q1 * q2.
+    """
+    w1, x1, y1, z1 = q1.unbind(dim=-1)
+    w2, x2, y2, z2 = q2.unbind(dim=-1)
+    
+    return torch.stack([w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+                        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2], dim=-1)
+
 def safe_state(silent):
     old_f = sys.stdout
     class F:
