@@ -51,10 +51,36 @@ class ColmapDataset(Dataset):
                  cameras_info,
                  resolution,
                  resolution_scale,args):
-        self.cameras_info_dataset=cameras_info
+        self.cameras_info_dataset=list(self.shuffle_camera_dict(cameras_info).values())
         self.resolution=resolution
         self.resolution_scale=resolution_scale
         self.args=args
+    
+
+    def shuffle_camera_dict(self,camera_dict):
+        """
+        打乱一个 {key: [CameraInfo, ...]} 格式的 dict，
+        保持 key 和 list 长度不变，但随机重组 camerainfo 分配。
+        """
+        # 1. 收集所有 CameraInfo
+        all_items = []
+        for lst in camera_dict.values():
+            all_items.extend(lst)
+
+        # 2. 打乱整体列表
+        random.shuffle(all_items)
+
+        # 3. 按原 list 长度重新分配
+        result = {}
+        start = 0
+        for key, lst in camera_dict.items():
+            length = len(lst)
+            result[key] = all_items[start:start + length]
+            start += length
+
+        return result
+
+
     def __getitem__(self, idx):
         cams_info=self.cameras_info_dataset[idx]
         train_cameras= cameraList_from_camInfos(cams_info, self.resolution_scale, self.args, False, False)
@@ -135,7 +161,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     # frame_indices=list(range(len(frame_stack))) # <--- 移除
 
     # 1. 准备数据集信息 (将字典值转换为列表)
-    frame_cameras_list = list(scene.train_cameras_info.values())
+    frame_cameras_list = scene.train_cameras_info
     
     # 2. 初始化 Dataset (假设 scene.args 可用)
     train_dataset = ColmapDataset(
@@ -192,19 +218,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             viewpoint_stack = viewpoint_cams.copy()
             viewpoint_indices = list(range(len(viewpoint_stack)))
             
-            if global_iteration< opt.densify_until_iter:
-                base_iterations=opt.iterations//10 +1
-            else:
-                base_iterations=opt.iterations + 1
-
+            # if global_iteration< opt.densify_until_iter:
+            #     base_iterations=opt.iterations//10 +1
+            # else:
+            #     base_iterations=opt.iterations + 1
+            base_iterations=opt.iterations + 1
             # SUMO 用于存储每一个视角的loss
             images_loss={}
             
             # loss大的视角加倍训练
-            if epoch > 1: 
-                if need_to_double_training(all_frame_loss, target_frame_id=current_frame_time_idx, top_percent=0.1):
-                    print(f"current_frame_time_idx: {current_frame_time_idx}, need to double training")
-                    base_iterations=(opt.iterations + 1)*2
+            # if epoch > 1: 
+            #     if need_to_double_training(all_frame_loss, target_frame_id=current_frame_time_idx, top_percent=0.1):
+            #         print(f"current_frame_time_idx: {current_frame_time_idx}, need to double training")
+            #         base_iterations=(opt.iterations + 1)*2
 
             progress_bar = tqdm(range(first_iter, base_iterations-1), desc="Training progress")
             
@@ -288,7 +314,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     Ll1depth = 0
 
                 # SUMO
-                images_loss[viewpoint_cam.image_name] = loss.item()
+                # images_loss[viewpoint_cam.image_name] = loss.item()
 
                 loss.backward()
 
@@ -314,8 +340,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                         scene.save(global_iteration)
 
                     # Densification
-                    # if global_iteration < opt.densify_until_iter:
-                    if epoch<2: #SUMO 稠密化2轮
+                    if global_iteration < opt.densify_until_iter:
+                    # if epoch<2: #SUMO 稠密化2轮
                         # Keep track of max radii in image-space for pruning
                         gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                         gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
@@ -344,9 +370,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                         torch.save((gaussians.capture(), global_iteration), scene.model_path + "/chkpnt" +str(global_iteration) + ".pth")
 
             # SUMO 记录这一帧的最大loss
-            if viewpoint_cams:
-                current_time_idx_loss=max(images_loss.values())
-                all_frame_loss[viewpoint_cams[0].time_idx]=current_time_idx_loss
+            # if viewpoint_cams:
+            #     current_time_idx_loss=max(images_loss.values())
+            #     all_frame_loss[viewpoint_cams[0].time_idx]=current_time_idx_loss
             
             # 确保下一帧 (下一个 batch) 的内部迭代从 0 开始
             first_iter = 0
