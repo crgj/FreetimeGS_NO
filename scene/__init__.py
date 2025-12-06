@@ -12,12 +12,14 @@
 import os
 import random
 import json
-from utils.system_utils import searchForMaxIteration
+from utils.system_utils import searchForMaxIteration, mkdir_p
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
-
+from scene.colmap_loader import read_points3D_binary
+from utils.graphics_utils import BasicPointCloud
+import numpy as np
 class Scene:
 
     gaussians : GaussianModel
@@ -53,8 +55,19 @@ class Scene:
             assert False, "Could not recognize scene type!"
 
         if not self.loaded_iter:
-            with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
-                dest_file.write(src_file.read())
+            # WDD [2024-08-07] [修复：处理 points3D.bin 的情况]
+            # 检查 .ply 文件是否存在，如果不存在，则尝试从 .bin 文件加载
+            ply_path = scene_info.ply_path
+            bin_path = ply_path.replace(".ply", ".bin")
+            if not os.path.exists(ply_path) and os.path.exists(bin_path):
+                print(f"Could not find {ply_path}, attempting to load {bin_path}")
+                xyz, rgb, _ = read_points3D_binary(bin_path)
+                # COLMAP的RGB是0-255，需要归一化到0-1
+                pcd = BasicPointCloud(points=xyz, colors=rgb / 255.0, normals=np.zeros_like(xyz))
+                scene_info = scene_info._replace(point_cloud=pcd) # 使用 _replace 创建新的不可变对象
+            else:
+                with open(ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
+                    dest_file.write(src_file.read())
             json_cams = []
             camlist = []
             if scene_info.test_cameras:
@@ -90,12 +103,13 @@ class Scene:
 
     def save(self, iteration):
         # WDD [2024-08-02] [修改保存逻辑以支持按帧保存PLY]
-        point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
+        point_cloud_iter_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
+        mkdir_p(point_cloud_iter_path)
         # 获取总帧数，通过查找训练数据中最大的时间索引+1
         frame_count = max(camera.time_idx for camera in self.getTrainCameras()) + 1
         # 为每个时间帧保存一个ply文件
         for t in range(frame_count):
-            ply_path = os.path.join(point_cloud_path, f"point_cloud_t{t}.ply")
+            ply_path = os.path.join(point_cloud_iter_path, f"point_cloud_t{t}.ply")
             # 将当前时间索引t传递给save_ply，以保存该帧的动态透明度
             self.gaussians.save_ply(ply_path, time_idx=t)
         exposure_dict = {
